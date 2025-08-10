@@ -9,6 +9,9 @@ This code applies STA to compute receptive fields from recordings of mouse V1 ne
 # Application
 This code can be used to perform STA analysis to calculate receptive fields for both binocular and monocular neurons across different experimental subjects. This code is specifically designed for electrophyscial recording data on animals. 
 
+# STA_Analysis File
+The MATLAB code used for STA analysis operates as follows: it first loads spike timing, stimulus timing, and stimulus parameter files. Next, the stimuli are reconstructed, and both stimuli and spike data are resampled to the same temporal resolution. Finally, receptive fields are calculated and visualized using STA analysis. The nonlinear function step is optional and depends on whether you wish to fit the nonlinear output function of your model.
+
 
 
 
