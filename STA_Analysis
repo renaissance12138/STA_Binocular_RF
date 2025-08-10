@@ -1,0 +1,356 @@
+
+%% Load Data
+%example neuron:
+spike= readmda('/Users/renaissance/Documents/2024_JC_Lab/Seiji2Yanbin_new/Data/JF_m049_240313_114905/output/firings_precur.mda');
+stimulus_time = load('/Users/renaissance/Documents/2024_JC_Lab/Seiji2Yanbin_new/Data/JF_m049_240313_114905.mat');
+stimulus_para= load('/Users/renaissance/Documents/2024_JC_Lab/Seiji2Yanbin_new/Data/20240313T120530-HartleyNoise.mat');
+
+%spike = readmda(spike_file);
+%stimulus_time = load(stimulus_time_file);
+%stimulus_para = load(stimulus_para_file);
+sti_time = stimulus_time.dig(3,:);
+sti_time = find(diff(sti_time) ~= 0);
+stimulus = stimulus_para.Stim.NoiseImg;
+
+
+%% reconstruct the stimulus 
+% set up parameters
+SFmax = stimulus_para.Stim.SFMax;
+SFmin = stimulus_para.Stim.SFMin;
+OriStep = stimulus_para.Stim.OriStep;
+FrameInterv = stimulus_para.Stim.FrameInterval;
+% set up spatial grid 
+x_len = 1/SFmin;
+x = 0.25/SFmax:0.5/SFmax:x_len-0.25/SFmax;
+[X,Y] = meshgrid(x,x);
+Nsf = round(stimulus_para.Stim.SFMax/stimulus_para.Stim.SFMin);
+Nori = round(180 / stimulus_para.Stim.OriStep);
+L = 1/stimulus_para.Stim.SFMin;
+D = 1/stimulus_para.Stim.SFMax/2;
+Nx = L/D;
+
+% Stimulus Frequency and Orientation Parameters:
+sf = SFmin:SFmin:SFmax;
+ori = 0:OriStep:150;
+ori = (ori*pi)/180;
+phi = 0:0.5:1.5;
+phi = phi*pi;
+% Define Grading Matrix
+N = length(ori)*length(sf)*length(phi);
+gradings = zeros(length(x),length(x),N);
+%ori_test = zeros(1,length(gradings));
+%sf_test = zeros(1,length(gradings));
+%phase_test = zeros(1,length(gradings));
+
+for i = 1:length(gradings)
+	% every 2 columns are 1 orientation
+	ori_pos = rem(i,length(ori)*length(sf)); % find the orientation position within 12 possible combinations of sf and ori
+	ori_pos(ori_pos==0)= length(ori)*length(sf);
+	ori_pos = ceil(ori_pos/length(sf));
+	ori_test(i) = ori_pos;
+	% each column is a SF and flip when it comes to the next column
+	sf_pos = rem(i,length(ori)*length(sf)); % find the orientation position within 12 possible combinations of sf and ori
+	sf_pos(sf_pos==0)= length(sf);
+	sf_pos = rem(sf_pos,length(sf));
+	sf_pos(sf_pos==0)= length(sf);
+    sf_test(i) = sf_pos;
+	% phase 
+	phase_pos = ceil(i/(N/length(phi)));
+	phase_test(i) = phase_pos;
+	gradings(:,:,i) = cos(2*pi*sf(sf_pos)*X*cos(ori(ori_pos)) + 2*pi*sf(sf_pos)*Y*sin(ori(ori_pos)) + phi(phase_pos));
+end
+
+% Loop through each row of hartly noise stimulus matrix (fourier domain to space domain)
+% left eye first
+S_L= zeros(length(x),length(x),length(stimulus)); % the frame of the stimulus
+for i = 1:length(stimulus)
+	on_grats_left = find(stimulus(i,1:12,:));
+	grading_matrix = gradings(:,:,on_grats_left);
+	S_L(:,:,i) = sum(grading_matrix,3);
+end
+
+% right eye first
+S_R = zeros(length(x),length(x),length(stimulus)); % the frame of the stimulus
+for i = 1:length(stimulus)
+	on_grats_right = find(stimulus(i,13:24,:));
+	grading_matrix = gradings(:,:,on_grats_right);
+	S_R(:,:,i) = sum(grading_matrix,3);
+end
+
+
+%% Downsample spikes to every 10 ms.
+% Choose the spikes for the specific cluster
+cluster_idx= 40;
+spike_cluster = spike(2, spike(3,:) == cluster_idx);
+
+% Convert spike times from samples to ms
+spike_cluster_ms = spike_cluster / 20;
+% spike_cluster_ms = round(spike_cluster_ms);
+
+% Bin the spikes into intervals of bin_size ms
+bin_size = 10;  % Set the desired bin size in ms
+
+% Define bin edges
+min_time = 1;
+max_time = ceil(max(spike_cluster_ms(1,:)));
+bin_edges = round(min_time:bin_size:max_time);
+bin_edges_left = bin_edges(1:end-1);
+% Count the number of events in each bin
+counts = histcounts(spike_cluster_ms(1,:), bin_edges);
+
+% Plot
+%bar(edges(1:end-1), counts, 'histc');
+%xlabel('Time (ms)');
+%ylabel('Spike Count');
+
+
+%% Upsample stim to sampling every 10 ms
+% Convert stimulus time from samples to ms (original data is in samples, 20 samples per ms)
+sti_time_ms = sti_time / 20;
+
+% Account for hardware delay (33ms = 2 frames), adjust for stimulus presentation delay
+sti_time_ms = sti_time_ms + 33;
+sti_time_ms = round(sti_time_ms);
+
+% map stimulus to each time point (left eye)
+sti_time_map_left = zeros(length(x),length(x),max(sti_time_ms));
+for i = 1: length(sti_time_ms)
+	sti_time = sti_time_ms(i);
+	sti_time_map_left(:,:,sti_time) = S_L(:,:,i); % index = stimulus time (ms); value= that stimulus 
+end
+
+% map stimulus to each time point (right eye) index = time in ms, value =
+% stimuli
+sti_time_map_right = zeros(length(x),length(x),max(sti_time_ms));
+for i = 1: length(sti_time_ms)
+	sti_time = sti_time_ms(i);
+	sti_time_map_right(:,:,sti_time) = S_R(:,:,i);
+end
+
+% find the index which has stimulus pattern(left_eye)
+% fill the gap with previous stimulus pattern(left_eye)
+% same as upsample stimulus to 1 ms 
+nonZeroIndices_L = find(squeeze(any(any(sti_time_map_left, 1), 2)));
+for i = 1:length(nonZeroIndices_L) - 1
+    startIdx = nonZeroIndices_L(i);
+    endIdx = nonZeroIndices_L(i + 1);
+
+    % Fill the gap with the value of the starting matrix (this shows the
+	% time range affected by a given stimulus (starting matrix)
+    for j = startIdx + 1:endIdx - 1
+       sti_time_map_left(:, :, j) = sti_time_map_left(:, :, startIdx);
+    end
+end
+
+% find the index which has stimulus pattern(right_eye)
+% fill the gap with previous stimulus pattern(right_eye)
+% same as upsample stimulus to 1 ms
+nonZeroIndices_R = find(squeeze(any(any(sti_time_map_right, 1), 2)));
+for i = 1:length(nonZeroIndices_R) - 1
+    startIdx = nonZeroIndices_R(i);
+    endIdx = nonZeroIndices_R(i + 1);
+
+    % Fill the gap with the value of the starting matrix
+    for j = startIdx + 1:endIdx - 1
+        sti_time_map_right(:, :, j) = sti_time_map_right(:, :, startIdx);
+    end
+end
+
+
+% You will need to have the same temporal resolution between stimuli and STA to convolve
+% sti_time_map_right have been upsampled to 1ms
+bin_size = 10;  % Set the desired bin size in ms
+
+% Define bin edges
+min_time = 1;
+max_time = size(sti_time_map_left,3);
+bin_edges_stim = min_time:bin_size:max_time;
+
+% Stimuli for Each 10ms bins
+sti_frame_size= size(sti_time_map_left,1);
+sti_time_10ms_left = zeros(sti_frame_size,sti_frame_size,size(bin_edges_stim,2));
+sti_time_10ms_right = zeros(sti_frame_size,sti_frame_size,size(bin_edges_stim,2));
+for b = 1:length(bin_edges_stim)-1
+    idx_start = bin_edges_stim(b);
+
+    current_bin_left= sti_time_map_left(:,:,idx_start);
+    current_bin_right= sti_time_map_right(:,:,idx_start);
+
+    sti_time_10ms_left(:,:,b) = current_bin_left;
+    sti_time_10ms_right(:,:,b) = current_bin_right;
+end
+
+
+%% Data cleaning: select spikes within the range of stimuli
+% 400 is the maximum time lag for STA calculation
+% start_idx = round(sti_time_ms(1)/bin_size); %ms to bins
+start_idx= round(sti_time_ms(1)/bin_size)+1;
+end_idx= length(bin_edges_stim);
+bin_edges_with_stim = bin_edges_left(start_idx:end_idx); % in ms
+counts_with_stim = counts(start_idx:end_idx);
+% bins with counts > 0 & bins before stimuli ends
+nonzero_idx = counts_with_stim > 0;
+nonzero_spike_indices = find(counts_with_stim > 0);
+% Combine both logical masks
+% Filter bin edges and counts usikng the valid indices
+bin_edges_nonzero = bin_edges_with_stim(nonzero_idx);
+counts_nonzero = counts_with_stim(nonzero_idx);
+%% Plot the bin_edges and counts·
+bar(bin_edges_nonzero, counts_nonzero);
+xlabel('Time (ms)');
+ylabel('Spike Count');
+title('Spike Counts per Time Bin');
+%% left eye STA
+time_lag_for_STA= 400;
+time_bin_lag= round(time_lag_for_STA/bin_size);
+STA_L = zeros(length(x),length(x),time_bin_lag);
+for i = 1:time_bin_lag
+	spike_time_lag = bin_edges_nonzero-i*bin_size;
+	STA_L(:,:,i)= sum(sti_time_map_left(:,:,spike_time_lag),3);
+end
+
+%right eye STA
+STA_R = zeros(length(x),length(x),time_bin_lag);
+for i = 1:time_bin_lag
+	spike_time_lag = bin_edges_nonzero-i*bin_size;
+	STA_R(:,:,i)= sum(sti_time_map_right(:,:,spike_time_lag),3);
+end
+
+
+for i = 1:time_bin_lag
+	STA_L(:,:,i) = STA_L(:,:,i)/length(spike_cluster_ms);
+	STA_R(:,:,i) = STA_R(:,:,i)/length(spike_cluster_ms);
+end
+
+%STA = zeros(401,32);
+%for i = 1:length(STA)
+	%OneDArray_L = reshape(STA_L(:,:,402-i),1,[]);
+	%OneDArray_R = reshape(STA_R(:,:,402-i),1,[]);
+	%STA(i,1:144)=OneDArray_L;
+	%STA(i,145:288)=OneDArray_R;
+%end
+
+frame_area= length(x)*length(x);
+STA = zeros(time_bin_lag, frame_area);
+for i = 1:length(STA)
+	OneDArray_L = reshape(STA_L(:,:,i), 1, frame_area);
+	OneDArray_R = reshape(STA_R(:,:,i), 1, frame_area);
+	STA(i,1:frame_area)=OneDArray_L;
+	STA(i,frame_area+1:2*frame_area)=OneDArray_R;
+end
+%% Visualization of Estimated Receptive Field
+STA_bin = zeros(8,size(STA,2));
+
+for n = 1:8
+	STA_bin(n,:) = mean(STA((5*(n-1)+1):(5*n),:));
+end
+
+sta = STA_bin;
+% sta = spktrig_bin(:,(Nx*Nx)+(1:Nx*Nx));
+
+
+[a, best_xy] = max(std(sta,0, 1));
+[a, best_lag] = max(abs(sta(:, best_xy)));
+y0 = mod((best_xy-1),Nsf)+1;
+x0 = floor((best_xy-1)/Nori)+1;
+
+figure;
+%subplot(1,2,1);
+%plot(sta(:, best_xy), 'LineWidth',2);
+%subplot(1,2,2);
+imagesc(reshape(sta(best_lag, :), Nx, 2*Nx), [-a,a]);
+set(gca, 'XTick', [1:8]);
+set(gca, 'XTickLabel', {'5','15','25','35','5','15','25','35'});
+set(gca, 'YTick', [1:4]);
+set(gca, 'YTickLabel', {'5','15','25','35'});
+
+xlabel('Degrees','FontSize',15) 
+ylabel('Degrees','FontSize',15) 
+colorbar
+xline(4.5,'--r')
+
+% imagesc(reshape(sta(best_lag, :), Nx, 2*Nx), [-a,a])
+hold on
+plot(x0,y0,'ro')
+% colormap turbo
+colorbar
+caxis([-0.18 0.18])
+
+%% Energy Disparity: Apply the linear filter to the stimulus (Convolution between stimulus and RF)
+% Assumptions:
+% - STA_L and STA_R: [4 x 4 x 40] = RF with 40 time lags
+% - sti_time_10ms_left and sti_time_10ms_right: [4 x 4 x 96028] = stimuli over time
+% - You want to convolve across the 40 time bins to get a 1D predicted response
+
+% Get size info
+[H, W, T_rf] = size(STA_L);  % STA dimensions
+stim_start_idx = 274;
+sti_time_10ms_left_shrink= sti_time_10ms_left(:,:,275:end); % delete time point before a stimulus is given
+sti_time_10ms_right_shrink= sti_time_10ms_right(:,:,275:end);
+T_stim = size(sti_time_10ms_left_shrink, 3); % number of stimulus time points
+predicted_left = zeros(T_stim, 1);
+predicted_right = zeros(T_stim, 1);
+
+% Loop from T_rf to end to ensure full convolution window
+for t = T_rf:T_stim
+    stim_segment_left = sti_time_10ms_left_shrink(:, :, t - T_rf + 1 : t);   % [4 x 4 x 40]
+    stim_segment_right = sti_time_10ms_left_shrink(:, :, t - T_rf + 1 : t); % [4 x 4 x 40]
+
+    % Element-wise multiplication and summing over all dims
+    predicted_left(t) = sum(flip(stim_segment_left) .* STA_L, 'all');
+    predicted_right(t) = sum(flip(stim_segment_right) .* STA_R, 'all');
+end
+
+% Optional: Remove initial transient (first T_rf-1 points will be 0)
+predicted_left = predicted_left(T_rf:end);
+predicted_right = predicted_right(T_rf:end);
+
+%% Nonlinear Function Fit and Model Evaluation
+% Inputs
+x = predicted_left + predicted_right;  % continuous prediction from convolution
+y = counts_with_stim(T_rf:end)';     % observed spike counts per 10ms
+
+% Define a nonlinear function, e.g., sigmoid
+sigmoid = @(b, x) b(1) ./ (1 + exp(-b(2)*(x - b(3))));  % 3-parameter sigmoid
+
+% Initial guess: [max_y, slope, center]
+b0 = [max(y), 1, mean(x)];
+
+% Fit using nonlinear least squares
+opts = optimset('Display','off');
+b_fit = lsqcurvefit(sigmoid, b0, x, y, [], [], opts);
+
+% Apply fitted function
+y_fit = sigmoid(b_fit, x);
+
+% Compute explained variance
+numerator = sum((y - y_fit).^2);
+denominator = sum((y - mean(y)).^2);
+explained_variance = 1 - (numerator / denominator);
+
+% Optional: print result
+fprintf('Explained Variance: %.4f\n', explained_variance);
+mse_linear = mean((x - y).^2);
+fprintf('Mean Squared Error (MSE)_Linear: %.4f\n', mse_linear);
+mse = mean((y - y_fit).^2);
+fprintf('Mean Squared Error (MSE): %.4f\n', mse);
+
+%% Plot
+% Assuming:
+% y     = observed spike counts (e.g., spikes per 10ms)
+% y_fit = predicted spike rate from sigmoid (same length as y)
+% T_rf  = number of bins skipped at the beginning due to RF length
+
+time_axis = (1:length(y)) * 10 + T_rf * 10;  % time in ms, assuming 10 ms bins
+
+figure;
+plot(time_axis, y, 'r', 'LineWidth', 1.5); 
+hold on;
+plot(time_axis, y_fit, 'k', 'LineWidth', 1.2);           % observed in black
+     % predicted in red
+
+xlabel('Time (ms)');
+ylabel('Spike Rate (spikes per 10 ms)');
+legend('Observed','Predicted');
+title('Observed vs. Predicted Spike Rates');
+grid on;
