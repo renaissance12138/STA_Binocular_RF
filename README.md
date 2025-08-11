@@ -15,4 +15,3 @@ The MATLAB code used for STA analysis operates as follows: it first loads spike 
 
 
 
-
